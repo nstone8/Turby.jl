@@ -1,0 +1,12 @@
+name = "Turby"
+uuid = "d735d23b-fc84-422d-8d21-ea379f0eb4a3"
+authors = ["Nick Stone <nicholasestone@proton.me>"]
+version = "0.1.0"
+
+[deps]
+Conda = "8f4d0f93-b110-5947-807f-2305c1781a2d"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+
+[compat]
+Conda = "1.10.2"
+PyCall = "1.96.4"
