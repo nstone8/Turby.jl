@@ -4,13 +4,33 @@ using PyCall
 
 export LuxSensor, Gain, gainlow, gainmedium, gainhigh, gainmax
 export IntegrationTime, it100, it200, it300, it400, it500, it600
-export setgain!, setintegrationtime!, visible
+export setgain!, setintegrationtime!, visible, measuretofile
+export BlinkaBoard
 
 """
 ```julia
-LuxSensor()
+BlinkaBoard()
 ```
-Connect to a tsl2591 lux sensor via Blinka. On linux systems the following
+Initialize a GPIO board using Blinka. On linux systems the following
+commands should be executed in the system shell before attempting to connect:
+- `sudo rmmod hid_mcp2221`:
+  Remove the built-in driver for the mcp2221 chip
+- `export BLINKA_MCP2221=1`:
+  Tell Blinka what is connected to the computer (the MCP2221 is our usb adapter)
+"""
+struct BlinkaBoard
+    board
+    function BlinkaBoard()
+        new(pyimport("board"))
+    end
+end
+
+"""
+```julia
+LuxSensor([board])
+```
+Connect to a tsl2591 lux sensor via Blinka. Optionally provide a pre-existing
+`BlinkaBoard` object to connect through. On linux systems the following
 commands should be executed in the system shell before attempting to connect:
 - `sudo rmmod hid_mcp2221`:
   Remove the built-in driver for the mcp2221 chip
@@ -20,14 +40,16 @@ commands should be executed in the system shell before attempting to connect:
 struct LuxSensor
     adafruit
     sensor
-    function LuxSensor()
+    function LuxSensor(board::BlinkaBoard)
         #python dependencies
-        board = pyimport("board")
         adafruit_tsl2591 = pyimport("adafruit_tsl2591")
-        i2c = board.I2C()
+        i2c = board.board.I2C()
         new(adafruit_tsl2591,adafruit_tsl2591.TSL2591(i2c))
     end
 end
+
+#if we don't have a BlinkaBoard we want to use, make a new one
+LuxSensor() = LuxSensor(BlinkaBoard())
 
 """
 Possible gain values for a tsl2591 Lux sensor. Possible values are:
@@ -120,6 +142,34 @@ Sample the intensity of the visible spectrum using the lux sensor `ls`
 """
 function visible(ls::LuxSensor)
     ls.sensor.visible
+end
+
+"""
+```julia
+measuretofile(ls,filename;gain=gainmedium,it=it200,nmeasurements=5)
+```
+Take visible intensity measurements from the `LuxSensor` `ls` and write the results to
+a plaintext file at `filename`. Keyword arguments allow for the adjustment of the sensor
+gain, integration time and the number of measurements to be taken.
+"""
+function measuretofile(ls::LuxSensor,filename;gain=gainmedium,it=it200,nmeasurements=5)
+    @assert !isfile(filename) "$filename already exists"
+    setgain!(ls,gain)
+    setintegrationtime!(ls,it)
+    sleep(1) #allow changes to sink in
+    #take 5 measurements and save them to a file
+    measurements = map(1:nmeasurements) do _
+        v = visible(ls)
+        println(v)
+        sleep(1)
+        return v
+    end
+
+    open(filename,"w") do io
+        for m in measurements
+            println(io,m)
+        end
+    end
 end
 
 end # module Turby
