@@ -4,9 +4,25 @@ authors = ["Nick Stone <nicholasestone@proton.me>"]
 version = "0.1.0"
 
 [deps]
+BlinkaBoards = "21363b03-61ef-4d89-813f-80ecd0f21085"
+CSVFiles = "5d742f6a-9f54-50ce-8119-2520741973ca"
 Conda = "8f4d0f93-b110-5947-807f-2305c1781a2d"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
+PCA9548 = "bbb2e940-43d1-47c3-b77c-c9243c20d82a"
+PCA9685 = "707c5d59-d629-46d8-926b-ce9800519990"
 PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+TSL2591 = "78d368c2-7583-4b1e-891b-543a6de6e000"
 
 [compat]
+BlinkaBoards = "0.1.0"
+CSVFiles = "1.0.2"
 Conda = "1.10.2"
+DataFrames = "1.8.0"
+Dates = "1.11.0"
+FileIO = "1.17.0"
+PCA9548 = "0.1.0"
+PCA9685 = "0.1.0"
 PyCall = "1.96.4"
+TSL2591 = "0.1.0"

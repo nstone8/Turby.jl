@@ -1,147 +1,212 @@
 module Turby
 
-using PyCall
+using BlinkaBoards, TSL2591, PCA9685, PCA9548, DataFrames, CSVFiles, Dates, FileIO
 
-export LuxSensor, Gain, gainlow, gainmedium, gainhigh, gainmax
-export IntegrationTime, it100, it200, it300, it400, it500, it600
-export setgain!, setintegrationtime!, visible, measuretofile
-export BlinkaBoard
+export measuretofile, TurbyDevice, createconfig, dissociate, turbytest, loadposition
 
 """
 ```julia
-BlinkaBoard()
+createconfig([filename])
 ```
-Initialize a GPIO board using Blinka. On linux systems the following
-commands should be executed in the system shell before attempting to connect:
-- `sudo rmmod hid_mcp2221`:
-  Remove the built-in driver for the mcp2221 chip
-- `export BLINKA_MCP2221=1`:
-  Tell Blinka what is connected to the computer (the MCP2221 is our usb adapter)
+Create a configuration file, if `filename` is omitted `"config.jl"` will be used.
+
+# Configuration parameters
+- ledpin: GPIO pin for controlling the LED
+- luxaddress: i2c channel on the multiplexer connected to the `LuxSensor`
+- servoaddress: i2c channel on the multiplexer connected to the `ServoDriver`
+- servochannel: physical channel on the `ServoDriver` which is connected to the continuous servo
+- forwardspeed: throttle command to drive the servo forward
+- forwardstop: throttle command to hold the servo at the forward stop
+- reversespeed: throttle command to drive the servo backwards
+- reversestop: throttle command to hold the servo at the reverse stop
+- tflip: time it takes the chamber to flip
+- tumbletime: time to wait between chamber flips
+- sampletime: how long to tumble between turbidity measurements
+- settletime: how long to allow the organoids to settle before turning on the lamp
+- lamptime: how long to wait between turning on the lamp and taking a turbidity measurment
+- datafile: where to store the turbidity measurements
+- endforward: true if driving forward puts the vial in the correct position to take a measurement
+- stopcondition: NOT YET IMPLEMENTED
 """
-struct BlinkaBoard
-    board
-    function BlinkaBoard()
-        new(pyimport("board"))
+function createconfig end
+
+createconfig() = createconfig("config.jl")
+
+function createconfig(filename::AbstractString)
+    open(filename,"w") do io
+        dictstr = """
+                Dict(
+                        :ledpin => 0,
+                        :luxaddress => 0,
+                        :servoaddress => 2,
+                        :servochannel => 0,
+                        :forwardspeed => .2,
+                        :forwardstop => 0,
+                        :reversestop => 0,
+                        :tflip => 1,
+                        :reversespeed => -.2,
+                        :tumbletime => 5,
+                        :sampletime => 180,
+                        :settletime => 10,
+                        :lamptime => 5,
+                        :datafile => "turbiditydata.csv",
+                        :endforward => true
+                )
+    """
+        print(io,dictstr)
+    end
+end
+    
+"""
+```julia
+TurbyDevice(ledpinnum,luxaddress,servoaddress)
+```
+"""
+struct TurbyDevice
+    ledpin::DigitalIOPin
+    luxsensor::LuxSensor
+    servo
+    function TurbyDevice(ledpinnum,luxaddress,servoaddress)
+        #get a handle to a connected BlinkaBoard
+        b = BlinkaBoard()
+        #set up a digital io pin for output
+        ledpin = DigitalIOPin(b,ledpinnum)
+        #set up our i2c multiplexer
+        multi = MultiI2C(i2c(b))
+        #set up our Lux Sensor
+        luxsensor = LuxSensor(multi[luxaddress])
+        servo = ServoDriver(multi[servoaddress])
+        new(ledpin,luxsensor,servo)
     end
 end
 
 """
 ```julia
-LuxSensor([board])
+dissociate(configdict)
+dissociate(configpath)
+dissociate()
 ```
-Connect to a tsl2591 lux sensor via Blinka. Optionally provide a pre-existing
-`BlinkaBoard` object to connect through. On linux systems the following
-commands should be executed in the system shell before attempting to connect:
-- `sudo rmmod hid_mcp2221`:
-  Remove the built-in driver for the mcp2221 chip
-- `export BLINKA_MCP2221=1`:
-  Tell Blinka what is connected to the computer (the MCP2221 is our usb adapter)
+Start a cycle of dissociation using the provided configuration parameters. If the configuration
+is not provided it will be read from `"config.jl"`
 """
-struct LuxSensor
-    adafruit
-    sensor
-    function LuxSensor(board::BlinkaBoard)
-        #python dependencies
-        adafruit_tsl2591 = pyimport("adafruit_tsl2591")
-        i2c = board.board.I2C()
-        new(adafruit_tsl2591,adafruit_tsl2591.TSL2591(i2c))
+function dissociate end
+
+dissociate() = dissociate("config.jl")
+
+function dissociate(configpath::AbstractString)
+    cdict = include(configpath)
+    dissociate(cdict)
+end
+
+#helper for constructing a TurbyDevice from config
+mkturby(;config...) = TurbyDevice(config[:ledpin],config[:luxaddress],config[:servoaddress])
+
+function dissociate(config::Dict)
+    #create our TurbyDevice
+    td = mkturby(;config...)
+    #number of times to tumble between samples
+    numtumble = ceil(Int,config[:sampletime]/config[:tumbletime])
+    #numtumble must be even so we take the measurement with the vial correctly oriented
+    numtumble = iseven(numtumble) ? numtumble : numtumble + 1
+    #create vectors to hold our data
+    tsample = DateTime[]
+    intensity = Number[]
+    #little helper function to turn these vectors into a dataframe
+    mkframe() = DataFrame(:time => tsample,:intensity => intensity)
+    #start the dissociation
+    tstart = now()
+    goingforward = !config[:endforward]
+    #go until stopcondition returns true
+    while true #implement stop condition here
+        for _ in 1:numtumble
+            throttle = goingforward ? config[:forwardspeed] : config[:reversespeed]
+            throttlestop = goingforward ? config[:forwardstop] : config[:reversestop]
+            goingforward = !goingforward
+            setthrottle!(td.servo,config[:servochannel],throttle)
+            sleep(config[:tflip])
+            setthrottle!(td.servo,config[:servochannel],throttlestop)
+            sleep(config[:tumbletime]-config[:tflip])
+        end
+        #time to take a measurement
+        #allow the organoids to settle
+        sleep(config[:settletime])
+        #turn on the lamp
+        digitalwrite!(td.ledpin,true)
+        #wait for a bit
+        sleep(config[:lamptime])
+        #take the measurement
+        push!(tsample,now())
+        push!(intensity,visible(td.luxsensor))
+        #turn off the lamp and show the data
+        digitalwrite!(td.ledpin,false)
+        frame = mkframe()
+        show(frame)
+        println()
+        save(config[:datafile],frame)
     end
-end
-
-#if we don't have a BlinkaBoard we want to use, make a new one
-LuxSensor() = LuxSensor(BlinkaBoard())
-
-"""
-Possible gain values for a tsl2591 Lux sensor. Possible values are:
-- `gainlow`
-- `gainmedium`
-- `gainhigh`
-- `gainmax`
-"""
-@enum Gain begin
-    #values taken from the python API
-    gainlow
-    gainmedium
-    gainhigh
-    gainmax
-end
-
-"""
-Possible integrationtimes for a tsl2591 Lux sensor. Possible values are:
-- `it100`
-- `it200`
-- `it300`
-- `it400`
-- `it500`
-- `it600`
-"""
-@enum IntegrationTime begin
-    #values taken from the python API
-    it100
-    it200
-    it300
-    it400
-    it500
-    it600
+    return mkframe()
 end
 
 """
 ```julia
-setgain!(ls,gain)
+turbytest(configdict)
+turbytest(configpath)
+turbytest()
 ```
-Set the gain on the lux sensor `ls`. `gain` must be a member
-of the `Gain` enum.
+Test the device by driving forwards and backwards while blinking the light
 """
-function setgain!(ls::LuxSensor,gain::Gain)
-    if gain == gainlow
-        ls.sensor.gain = ls.adafruit.GAIN_LOW
-    elseif gain == gainmedium
-        ls.sensor.gain = ls.adafruit.GAIN_MED
-    elseif gain == gainhigh
-        ls.sensor.gain = ls.adafruit.GAIN_HIGH
-    elseif gain == gainmax
-        ls.sensor.gain = ls.adafruit.GAIN_MAX
-    else
-        error("this should be impossible")
+function turbytest end
+
+turbytest() = turbytest("config.jl")
+
+function turbytest(configpath::AbstractString)
+    cdict = include(configpath)
+    turbytest(cdict)
+end
+
+function turbytest(config)
+    td = mkturby(;config...)
+    goingforward = !config[:endforward]
+    #go forever
+    while true
+        throttle = goingforward ? config[:forwardspeed] : config[:reversespeed]
+        throttlestop = goingforward ? config[:forwardstop] : config[:reversestop]
+        goingforward = !goingforward
+        setthrottle!(td.servo,config[:servochannel],throttle)
+        digitalwrite!(td.ledpin,goingforward)
+        sleep(config[:tflip])
+        setthrottle!(td.servo,config[:servochannel],throttlestop)
+        digitalwrite!(td.ledpin,!goingforward)
+        sleep(config[:tumbletime]-config[:tflip])
+        @show visible(td.luxsensor)
     end
-    return nothing
 end
 
 """
 ```julia
-setintegrationtime!(ls,it)
+loadposition(configdict)
+loadposition(configpath)
+loadposition()
 ```
-Set the integration time on the lux sensor `ls`. `it` must be a member
-of the `IntegrationTime` enum.
+Move the chamber to the load position
 """
-function setintegrationtime!(ls::LuxSensor,it::IntegrationTime)
-    if it == it100
-        ls.sensor.integration_time = ls.adafruit.INTEGRATIONTIME_100MS
-    elseif it == it200
-        ls.sensor.integration_time = ls.adafruit.INTEGRATIONTIME_200MS
-    elseif it == it300
-        ls.sensor.integration_time = ls.adafruit.INTEGRATIONTIME_300MS
-    elseif it == it400
-        ls.sensor.integration_time = ls.adafruit.INTEGRATIONTIME_400MS
-    elseif it == it500
-        ls.sensor.integration_time = ls.adafruit.INTEGRATIONTIME_500MS
-    elseif it == it600
-        ls.sensor.integration_time = ls.adafruit.INTEGRATIONTIME_600MS
-    else
-        error("should be impossible")
-    end
+function loadposition end
 
-    return nothing
+loadposition() = loadposition("config.jl")
+
+function loadposition(configpath::AbstractString)
+    cdict = include(configpath)
+    loadposition(cdict)
 end
 
-"""
-```julia
-visible(ls)
-```
-Sample the intensity of the visible spectrum using the lux sensor `ls`
-"""
-function visible(ls::LuxSensor)
-    ls.sensor.visible
+function loadposition(config)
+    td = mkturby(;config...)
+    (throttle,throttlestop) = config[:endforward] ?
+        (config[:reversespeed],config[:reversestop]) :
+        (config[:forwardspeed],config[:forwardstop])
+    setthrottle!(td.servo,config[:servochannel],throttle)
+    sleep(config[:tflip])
+    setthrottle!(td.servo,config[:servochannel],throttlestop)
 end
 
 """
