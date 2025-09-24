@@ -109,10 +109,10 @@ function dissociate(config::Dict)
     #numtumble must be even so we take the measurement with the vial correctly oriented
     numtumble = iseven(numtumble) ? numtumble : numtumble + 1
     #create vectors to hold our data
-    tsample = DateTime[]
+    tsample = Millisecond[]
     intensity = Number[]
     #little helper function to turn these vectors into a dataframe
-    mkframe() = DataFrame(:time => tsample,:intensity => intensity)
+    mkframe() = DataFrame(:time_ms => Dates.value.(tsample),:intensity => intensity)
     #start the dissociation
     tstart = now()
     goingforward = !config[:endforward]
@@ -135,7 +135,7 @@ function dissociate(config::Dict)
         #wait for a bit
         sleep(config[:lamptime])
         #take the measurement
-        push!(tsample,now())
+        push!(tsample,now()-tstart)
         push!(intensity,visible(td.luxsensor))
         #turn off the lamp and show the data
         digitalwrite!(td.ledpin,false)
