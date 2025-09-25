@@ -2,7 +2,7 @@ module Turby
 
 using BlinkaBoards, TSL2591, PCA9685, PCA9548, DataFrames, CSVFiles, Dates, FileIO
 
-export measuretofile, TurbyDevice, createconfig, dissociate, turbytest, loadposition
+export TurbyDevice, createconfig, dissociate!, turbytest!, loadposition!, manualread!
 
 """
 ```julia
@@ -26,6 +26,8 @@ Create a configuration file, if `filename` is omitted `"config.jl"` will be used
 - lamptime: how long to wait between turning on the lamp and taking a turbidity measurment
 - datafile: where to store the turbidity measurements
 - endforward: true if driving forward puts the vial in the correct position to take a measurement
+- gain: gain for the `LuxSensor`
+- integrationtime: integration time for the `LuxSensor`
 - stopcondition: NOT YET IMPLEMENTED
 """
 function createconfig end
@@ -45,12 +47,14 @@ function createconfig(filename::AbstractString)
                         :reversestop => 0,
                         :tflip => 1,
                         :reversespeed => -.2,
-                        :tumbletime => 5,
-                        :sampletime => 180,
-                        :settletime => 10,
-                        :lamptime => 5,
+                        :tumbletime => 3,
+                        :sampletime => 300,
+                        :settletime => 30,
+                        :lamptime => 1,
                         :datafile => "turbiditydata.csv",
-                        :endforward => true
+                        :endforward => true,
+                        :gain => gainlow,
+                        :integrationtime => it300
                 )
     """
         print(io,dictstr)
@@ -82,26 +86,45 @@ end
 
 """
 ```julia
-dissociate(configdict)
-dissociate(configpath)
-dissociate()
+flipchamber!(td,forward,config)
+```
+Flip the chamber. Flip forward if `forward` is true otherwise flip backwards
+"""
+function flipchamber!(td::TurbyDevice,forward::Bool,config::Dict)
+    throttle = forward ? config[:forwardspeed] : config[:reversespeed]
+    throttlestop = forward ? config[:forwardstop] : config[:reversestop]
+    setthrottle!(td.servo,config[:servochannel],throttle)
+    sleep(config[:tflip])
+    setthrottle!(td.servo,config[:servochannel],throttlestop)
+end
+
+"""
+```julia
+dissociate!(configdict)
+dissociate!(configpath)
+dissociate!()
 ```
 Start a cycle of dissociation using the provided configuration parameters. If the configuration
 is not provided it will be read from `"config.jl"`
 """
-function dissociate end
+function dissociate! end
 
-dissociate() = dissociate("config.jl")
+dissociate!() = dissociate!("config.jl")
 
-function dissociate(configpath::AbstractString)
+function dissociate!(configpath::AbstractString)
     cdict = include(configpath)
-    dissociate(cdict)
+    dissociate!(cdict)
 end
 
 #helper for constructing a TurbyDevice from config
-mkturby(;config...) = TurbyDevice(config[:ledpin],config[:luxaddress],config[:servoaddress])
+function mkturby(;config...)
+    td = TurbyDevice(config[:ledpin],config[:luxaddress],config[:servoaddress])
+    setgain!(td.luxsensor,config[:gain])
+    setintegrationtime!(td.luxsensor,config[:integrationtime])
+    return td
+end
 
-function dissociate(config::Dict)
+function dissociate!(config::Dict)
     #create our TurbyDevice
     td = mkturby(;config...)
     #number of times to tumble between samples
@@ -119,12 +142,8 @@ function dissociate(config::Dict)
     #go until stopcondition returns true
     while true #implement stop condition here
         for _ in 1:numtumble
-            throttle = goingforward ? config[:forwardspeed] : config[:reversespeed]
-            throttlestop = goingforward ? config[:forwardstop] : config[:reversestop]
+            flipchamber!(td,goingforward,config)
             goingforward = !goingforward
-            setthrottle!(td.servo,config[:servochannel],throttle)
-            sleep(config[:tflip])
-            setthrottle!(td.servo,config[:servochannel],throttlestop)
             sleep(config[:tumbletime]-config[:tflip])
         end
         #time to take a measurement
@@ -149,34 +168,29 @@ end
 
 """
 ```julia
-turbytest(configdict)
-turbytest(configpath)
-turbytest()
+turbytest!(configdict)
+turbytest!(configpath)
+turbytest!()
 ```
 Test the device by driving forwards and backwards while blinking the light
 """
-function turbytest end
+function turbytest! end
 
-turbytest() = turbytest("config.jl")
+turbytest!() = turbytest!("config.jl")
 
-function turbytest(configpath::AbstractString)
+function turbytest!(configpath::AbstractString)
     cdict = include(configpath)
-    turbytest(cdict)
+    turbytest!(cdict)
 end
 
-function turbytest(config)
+function turbytest!(config)
     td = mkturby(;config...)
     goingforward = !config[:endforward]
     #go forever
     while true
-        throttle = goingforward ? config[:forwardspeed] : config[:reversespeed]
-        throttlestop = goingforward ? config[:forwardstop] : config[:reversestop]
-        goingforward = !goingforward
-        setthrottle!(td.servo,config[:servochannel],throttle)
+        flipchamber!(td,goingforward,config)
         digitalwrite!(td.ledpin,goingforward)
-        sleep(config[:tflip])
-        setthrottle!(td.servo,config[:servochannel],throttlestop)
-        digitalwrite!(td.ledpin,!goingforward)
+        goingforward = !goingforward
         sleep(config[:tumbletime]-config[:tflip])
         @show visible(td.luxsensor)
     end
@@ -184,57 +198,79 @@ end
 
 """
 ```julia
-loadposition(configdict)
-loadposition(configpath)
-loadposition()
+loadposition!(configdict)
+loadposition!(configpath)
+loadposition!()
 ```
 Move the chamber to the load position
 """
-function loadposition end
+function loadposition! end
 
-loadposition() = loadposition("config.jl")
+loadposition!() = loadposition!("config.jl")
 
-function loadposition(configpath::AbstractString)
+function loadposition!(configpath::AbstractString)
     cdict = include(configpath)
-    loadposition(cdict)
+    loadposition!(cdict)
 end
 
-function loadposition(config)
+function loadposition!(config)
     td = mkturby(;config...)
-    (throttle,throttlestop) = config[:endforward] ?
-        (config[:reversespeed],config[:reversestop]) :
-        (config[:forwardspeed],config[:forwardstop])
-    setthrottle!(td.servo,config[:servochannel],throttle)
-    sleep(config[:tflip])
-    setthrottle!(td.servo,config[:servochannel],throttlestop)
+    flipchamber!(td,!config[:endforward],config)
 end
 
 """
 ```julia
-measuretofile(ls,filename;gain=gainmedium,it=it200,nmeasurements=5)
+manualread!(datapath)
+manualread!(datapath,configpath)
+manualread!(datapath,config)
 ```
-Take visible intensity measurements from the `LuxSensor` `ls` and write the results to
-a plaintext file at `filename`. Keyword arguments allow for the adjustment of the sensor
-gain, integration time and the number of measurements to be taken.
+Take manual turbidity measurements.
 """
-function measuretofile(ls::LuxSensor,filename;gain=gainmedium,it=it200,nmeasurements=5)
-    @assert !isfile(filename) "$filename already exists"
-    setgain!(ls,gain)
-    setintegrationtime!(ls,it)
-    sleep(1) #allow changes to sink in
-    #take 5 measurements and save them to a file
-    measurements = map(1:nmeasurements) do _
-        v = visible(ls)
-        println(v)
-        sleep(1)
-        return v
-    end
+function manualread! end
 
-    open(filename,"w") do io
-        for m in measurements
-            println(io,m)
+manualread!(datapath) = manualread!(datapath::AbstractString,"config.jl")
+
+function manualread!(datapath::AbstractString,configpath::AbstractString)
+    cdict = include(configpath)
+    manualread!(datapath,cdict)
+end
+
+function manualread!(datapath::AbstractString,config::Dict)
+    #keep going until asked to stop
+    td = mkturby(;config...)
+    #go to load position
+    flipchamber!(td,!config[:endforward],config)
+    samplenames = String[]
+    intensities = Number[]
+    #keep going until asked to stop
+    while true
+        println("Load sample and enter sample name. Leave blank to stop.")
+        samplename = readline()
+        if isempty(samplename)
+            break
         end
+        push!(samplenames,samplename)
+        #go to 'read' position
+        flipchamber!(td,config[:endforward],config)
+        digitalwrite!(td.ledpin,true)
+        sleep(config[:lamptime])
+        intensity = visible(td.luxsensor)
+        push!(intensities,intensity)
+        println("measured intensity: $intensity")
+        digitalwrite!(td.ledpin,false)
+        #go to load position
+        flipchamber!(td,!config[:endforward],config)
+        println("remove lid and press enter to eject sample")
+        readline()
+        #go to 'read' position
+        flipchamber!(td,config[:endforward],config)
+        sleep(5)
+        #go to load position
+        flipchamber!(td,!config[:endforward],config)
     end
+    data = DataFrame(sample = samplenames, intensity = intensities)
+    save(datapath,data)
+    return data
 end
 
 end # module Turby

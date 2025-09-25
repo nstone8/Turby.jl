@@ -1,7 +1,7 @@
 name = "Turby"
 uuid = "d735d23b-fc84-422d-8d21-ea379f0eb4a3"
 authors = ["Nick Stone <nicholasestone@proton.me>"]
-version = "0.1.1"
+version = "0.2.0"
 
 [deps]
 BlinkaBoards = "21363b03-61ef-4d89-813f-80ecd0f21085"
