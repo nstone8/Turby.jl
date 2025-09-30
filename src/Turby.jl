@@ -49,11 +49,11 @@ function createconfig(filename::AbstractString)
                         :reversespeed => -.2,
                         :tumbletime => 3,
                         :sampletime => 300,
-                        :settletime => 30,
-                        :lamptime => 1,
+                        :settletime => 28,
+                        :lamptime => 2,
                         :datafile => "turbiditydata.csv",
                         :endforward => true,
-                        :gain => gainlow,
+                        :gain => gainmedium,
                         :integrationtime => it300
                 )
     """
@@ -137,15 +137,12 @@ function dissociate!(config::Dict)
     #little helper function to turn these vectors into a dataframe
     mkframe() = DataFrame(:time_ms => Dates.value.(tsample),:intensity => intensity)
     #start the dissociation
-    tstart = now()
     goingforward = !config[:endforward]
+    tstart = now()
+    #flip to the read position
+    flipchamber!(td,config[:endforward],config)
     #go until stopcondition returns true
     while true #implement stop condition here
-        for _ in 1:numtumble
-            flipchamber!(td,goingforward,config)
-            goingforward = !goingforward
-            sleep(config[:tumbletime]-config[:tflip])
-        end
         #time to take a measurement
         #allow the organoids to settle
         sleep(config[:settletime])
@@ -162,6 +159,12 @@ function dissociate!(config::Dict)
         show(frame)
         println()
         save(config[:datafile],frame)
+        #tumble until next measurement
+        for _ in 1:numtumble
+            flipchamber!(td,goingforward,config)
+            goingforward = !goingforward
+            sleep(config[:tumbletime]-config[:tflip])
+        end
     end
     return mkframe()
 end
