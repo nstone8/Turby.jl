@@ -2,7 +2,7 @@ module Turby
 
 using BlinkaBoards, TSL2591, PCA9685, PCA9548, DataFrames, CSVFiles, Dates, FileIO
 
-export TurbyDevice, createconfig, dissociate!, turbytest!, loadposition!, manualread!
+export TurbyDevice, createconfig, dissociate, turbytest, loadposition, manualread
 
 """
 ```julia
@@ -86,11 +86,11 @@ end
 
 """
 ```julia
-flipchamber!(td,forward,config)
+flipchamber(td,forward,config)
 ```
 Flip the chamber. Flip forward if `forward` is true otherwise flip backwards
 """
-function flipchamber!(td::TurbyDevice,forward::Bool,config::Dict)
+function flipchamber(td::TurbyDevice,forward::Bool,config::Dict)
     throttle = forward ? config[:forwardspeed] : config[:reversespeed]
     throttlestop = forward ? config[:forwardstop] : config[:reversestop]
     setthrottle!(td.servo,config[:servochannel],throttle)
@@ -100,20 +100,20 @@ end
 
 """
 ```julia
-dissociate!(configdict)
-dissociate!(configpath)
-dissociate!()
+dissociate(configdict)
+dissociate(configpath)
+dissociate()
 ```
 Start a cycle of dissociation using the provided configuration parameters. If the configuration
 is not provided it will be read from `"config.jl"`
 """
-function dissociate! end
+function dissociate end
 
-dissociate!() = dissociate!("config.jl")
+dissociate() = dissociate("config.jl")
 
-function dissociate!(configpath::AbstractString)
+function dissociate(configpath::AbstractString)
     cdict = include(configpath)
-    dissociate!(cdict)
+    dissociate(cdict)
 end
 
 #helper for constructing a TurbyDevice from config
@@ -124,7 +124,7 @@ function mkturby(;config...)
     return td
 end
 
-function dissociate!(config::Dict)
+function dissociate(config::Dict)
     #create our TurbyDevice
     td = mkturby(;config...)
     #number of times to tumble between samples
@@ -140,7 +140,7 @@ function dissociate!(config::Dict)
     goingforward = !config[:endforward]
     tstart = now()
     #flip to the read position
-    flipchamber!(td,config[:endforward],config)
+    flipchamber(td,config[:endforward],config)
     #go until stopcondition returns true
     while true #implement stop condition here
         #time to take a measurement
@@ -161,7 +161,7 @@ function dissociate!(config::Dict)
         save(config[:datafile],frame)
         #tumble until next measurement
         for _ in 1:numtumble
-            flipchamber!(td,goingforward,config)
+            flipchamber(td,goingforward,config)
             goingforward = !goingforward
             sleep(config[:tumbletime]-config[:tflip])
         end
@@ -171,27 +171,27 @@ end
 
 """
 ```julia
-turbytest!(configdict)
-turbytest!(configpath)
-turbytest!()
+turbytest(configdict)
+turbytest(configpath)
+turbytest()
 ```
 Test the device by driving forwards and backwards while blinking the light
 """
-function turbytest! end
+function turbytest end
 
-turbytest!() = turbytest!("config.jl")
+turbytest() = turbytest("config.jl")
 
-function turbytest!(configpath::AbstractString)
+function turbytest(configpath::AbstractString)
     cdict = include(configpath)
-    turbytest!(cdict)
+    turbytest(cdict)
 end
 
-function turbytest!(config)
+function turbytest(config)
     td = mkturby(;config...)
     goingforward = !config[:endforward]
     #go forever
     while true
-        flipchamber!(td,goingforward,config)
+        flipchamber(td,goingforward,config)
         digitalwrite!(td.ledpin,goingforward)
         goingforward = !goingforward
         sleep(config[:tumbletime]-config[:tflip])
@@ -201,48 +201,48 @@ end
 
 """
 ```julia
-loadposition!(configdict)
-loadposition!(configpath)
-loadposition!()
+loadposition(configdict)
+loadposition(configpath)
+loadposition()
 ```
 Move the chamber to the load position
 """
-function loadposition! end
+function loadposition end
 
-loadposition!() = loadposition!("config.jl")
+loadposition() = loadposition("config.jl")
 
-function loadposition!(configpath::AbstractString)
+function loadposition(configpath::AbstractString)
     cdict = include(configpath)
-    loadposition!(cdict)
+    loadposition(cdict)
 end
 
-function loadposition!(config)
+function loadposition(config)
     td = mkturby(;config...)
-    flipchamber!(td,!config[:endforward],config)
+    flipchamber(td,!config[:endforward],config)
 end
 
 """
 ```julia
-manualread!(datapath)
-manualread!(datapath,configpath)
-manualread!(datapath,config)
+manualread(datapath)
+manualread(datapath,configpath)
+manualread(datapath,config)
 ```
 Take manual turbidity measurements.
 """
-function manualread! end
+function manualread end
 
-manualread!(datapath) = manualread!(datapath::AbstractString,"config.jl")
+manualread(datapath) = manualread(datapath::AbstractString,"config.jl")
 
-function manualread!(datapath::AbstractString,configpath::AbstractString)
+function manualread(datapath::AbstractString,configpath::AbstractString)
     cdict = include(configpath)
-    manualread!(datapath,cdict)
+    manualread(datapath,cdict)
 end
 
-function manualread!(datapath::AbstractString,config::Dict)
+function manualread(datapath::AbstractString,config::Dict)
     #keep going until asked to stop
     td = mkturby(;config...)
     #go to load position
-    flipchamber!(td,!config[:endforward],config)
+    flipchamber(td,!config[:endforward],config)
     samplenames = String[]
     intensities = Number[]
     #keep going until asked to stop
@@ -254,7 +254,7 @@ function manualread!(datapath::AbstractString,config::Dict)
         end
         push!(samplenames,samplename)
         #go to 'read' position
-        flipchamber!(td,config[:endforward],config)
+        flipchamber(td,config[:endforward],config)
         digitalwrite!(td.ledpin,true)
         sleep(config[:lamptime])
         intensity = visible(td.luxsensor)
@@ -262,14 +262,14 @@ function manualread!(datapath::AbstractString,config::Dict)
         println("measured intensity: $intensity")
         digitalwrite!(td.ledpin,false)
         #go to load position
-        flipchamber!(td,!config[:endforward],config)
+        flipchamber(td,!config[:endforward],config)
         println("remove lid and press enter to eject sample")
         readline()
         #go to 'read' position
-        flipchamber!(td,config[:endforward],config)
+        flipchamber(td,config[:endforward],config)
         sleep(5)
         #go to load position
-        flipchamber!(td,!config[:endforward],config)
+        flipchamber(td,!config[:endforward],config)
     end
     data = DataFrame(sample = samplenames, intensity = intensities)
     save(datapath,data)
