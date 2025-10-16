@@ -24,7 +24,7 @@ Create a configuration file, if `filename` is omitted `"config.jl"` will be used
 - sampletime: how long to tumble between turbidity measurements
 - settletime: how long to allow the organoids to settle before turning on the lamp
 - lamptime: how long to wait between turning on the lamp and taking a turbidity measurment
-- datafile: where to store the turbidity measurements
+- datafile: where to store the turbidity measurements, formatted as a path followed by a base name. the current date and time as well as `".csv"` will be appended
 - endforward: true if driving forward puts the vial in the correct position to take a measurement
 - gain: gain for the `LuxSensor`
 - integrationtime: integration time for the `LuxSensor`
@@ -51,7 +51,7 @@ function createconfig(filename::AbstractString)
                         :sampletime => 300,
                         :settletime => 28,
                         :lamptime => 2,
-                        :datafile => "turbiditydata.csv",
+                        :datafile => "turbiditydata",
                         :endforward => true,
                         :gain => gainmedium,
                         :integrationtime => it300
@@ -100,20 +100,22 @@ end
 
 """
 ```julia
-dissociate(configdict)
-dissociate(configpath)
-dissociate()
+dissociate(configdict,[channel])
+dissociate(configpath,[channel])
+dissociate([channel])
 ```
 Start a cycle of dissociation using the provided configuration parameters. If the configuration
-is not provided it will be read from `"config.jl"`
+is not provided it will be read from `"config.jl"`. If `channel` is provided, `(time_ms,turbidity)` values
+will be written to this channel during the dissociation, closing this `Channel` will kill the
+dissociation.
 """
 function dissociate end
 
-dissociate() = dissociate("config.jl")
+dissociate(channel=nothing) = dissociate("config.jl",channel)
 
-function dissociate(configpath::AbstractString)
+function dissociate(configpath::AbstractString,channel=nothing)
     cdict = include(configpath)
-    dissociate(cdict)
+    dissociate(cdict,channel)
 end
 
 #helper for constructing a TurbyDevice from config
@@ -124,7 +126,9 @@ function mkturby(;config...)
     return td
 end
 
-function dissociate(config::Dict)
+dissociate(config::Dict) = dissociate(config,nothing)
+
+function dissociate(config::Dict,channel::Union{Channel,Nothing})
     #create our TurbyDevice
     td = mkturby(;config...)
     #number of times to tumble between samples
@@ -132,13 +136,14 @@ function dissociate(config::Dict)
     #numtumble must be even so we take the measurement with the vial correctly oriented
     numtumble = iseven(numtumble) ? numtumble : numtumble + 1
     #create vectors to hold our data
-    tsample = Millisecond[]
+    tsample = Number[]
     intensity = Number[]
     #little helper function to turn these vectors into a dataframe
-    mkframe() = DataFrame(:time_ms => Dates.value.(tsample),:intensity => intensity)
+    mkframe() = DataFrame(:time_ms => tsample,:intensity => intensity)
     #start the dissociation
     goingforward = !config[:endforward]
     tstart = now()
+    datafile = config[:datafile] * Dates.format(tstart,dateformat"y-m-d-HHMMSS") * ".csv"
     #flip to the read position
     flipchamber(td,config[:endforward],config)
     #go until stopcondition returns true
@@ -151,16 +156,26 @@ function dissociate(config::Dict)
         #wait for a bit
         sleep(config[:lamptime])
         #take the measurement
-        push!(tsample,now()-tstart)
-        push!(intensity,visible(td.luxsensor))
+        thistime_ms::Millisecond = now()-tstart
+        thistime = Dates.value(thistime_ms)
+        push!(tsample,thistime)
+        thismeasurement = visible(td.luxsensor)
+        push!(intensity,thismeasurement)
+        if !isnothing(channel)
+            put!(channel,(thistime,thismeasurement))
+        end
         #turn off the lamp and show the data
         digitalwrite!(td.ledpin,false)
         frame = mkframe()
         show(frame)
         println()
-        save(config[:datafile],frame)
+        save(datafile,frame)
         #tumble until next measurement
         for _ in 1:numtumble
+            #test if we should stop
+            if (!isnothing(channel) && !isopen(channel))
+                return mkframe()
+            end
             flipchamber(td,goingforward,config)
             goingforward = !goingforward
             sleep(config[:tumbletime]-config[:tflip])
