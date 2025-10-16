@@ -1,6 +1,6 @@
 module Turby
 
-using BlinkaBoards, TSL2591, PCA9685, PCA9548, DataFrames, CSVFiles, Dates, FileIO
+using BlinkaBoards, TSL2591, PCA9685, DataFrames, CSVFiles, Dates, FileIO
 
 export TurbyDevice, createconfig, dissociate, turbytest, loadposition, manualread
 
@@ -12,8 +12,6 @@ Create a configuration file, if `filename` is omitted `"config.jl"` will be used
 
 # Configuration parameters
 - ledpin: GPIO pin for controlling the LED
-- luxaddress: i2c channel on the multiplexer connected to the `LuxSensor`
-- servoaddress: i2c channel on the multiplexer connected to the `ServoDriver`
 - servochannel: physical channel on the `ServoDriver` which is connected to the continuous servo
 - forwardspeed: throttle command to drive the servo forward
 - forwardstop: throttle command to hold the servo at the forward stop
@@ -39,8 +37,6 @@ function createconfig(filename::AbstractString)
         dictstr = """
                 Dict(
                         :ledpin => 0,
-                        :luxaddress => 0,
-                        :servoaddress => 2,
                         :servochannel => 0,
                         :forwardspeed => .2,
                         :forwardstop => 0,
@@ -63,23 +59,23 @@ end
     
 """
 ```julia
-TurbyDevice(ledpinnum,luxaddress,servoaddress)
+TurbyDevice(ledpinnum)
 ```
 """
 struct TurbyDevice
     ledpin::DigitalIOPin
     luxsensor::LuxSensor
     servo
-    function TurbyDevice(ledpinnum,luxaddress,servoaddress)
+    function TurbyDevice(ledpinnum)
         #get a handle to a connected BlinkaBoard
         b = BlinkaBoard()
         #set up a digital io pin for output
         ledpin = DigitalIOPin(b,ledpinnum)
-        #set up our i2c multiplexer
-        multi = MultiI2C(i2c(b))
+        #get our board's i2c bus
+        bi2c = i2c(b)
         #set up our Lux Sensor
-        luxsensor = LuxSensor(multi[luxaddress])
-        servo = ServoDriver(multi[servoaddress])
+        luxsensor = LuxSensor(bi2c)
+        servo = ServoDriver(bi2c)
         new(ledpin,luxsensor,servo)
     end
 end
@@ -120,7 +116,7 @@ end
 
 #helper for constructing a TurbyDevice from config
 function mkturby(;config...)
-    td = TurbyDevice(config[:ledpin],config[:luxaddress],config[:servoaddress])
+    td = TurbyDevice(config[:ledpin])
     setgain!(td.luxsensor,config[:gain])
     setintegrationtime!(td.luxsensor,config[:integrationtime])
     return td
