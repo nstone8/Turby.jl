@@ -139,7 +139,7 @@ function dissociate(config::Dict,channel::Union{Channel,Nothing})
     #start the dissociation
     goingforward = !config[:endforward]
     tstart = now()
-    datafile = config[:datafile] * Dates.format(tstart,dateformat"y-m-d-HHMMSS") * ".csv"
+    datafile = config[:datafile] * Dates.format(tstart,dateformat"Y-m-d-HHMMSS") * ".csv"
     #flip to the read position
     flipchamber(td,config[:endforward],config)
     #go until stopcondition returns true

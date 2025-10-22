@@ -1,6 +1,6 @@
 name = "Turby"
 uuid = "d735d23b-fc84-422d-8d21-ea379f0eb4a3"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Nick Stone <nicholasestone@proton.me>"]
 
 [deps]
