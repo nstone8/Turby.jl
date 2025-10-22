@@ -2,7 +2,7 @@ module Turby
 
 using BlinkaBoards, TSL2591, PCA9685, DataFrames, CSVFiles, Dates, FileIO
 
-export TurbyDevice, createconfig, dissociate, turbytest, loadposition, manualread
+export TurbyDevice, createconfig, dissociate, turbytest, loadposition, ejectposition, manualread
 
 """
 ```julia
@@ -41,7 +41,7 @@ function createconfig(filename::AbstractString)
                         :forwardspeed => .2,
                         :forwardstop => 0,
                         :reversestop => 0,
-                        :tflip => 1,
+                        :tflip => 0.6,
                         :reversespeed => -.2,
                         :tumbletime => 3,
                         :sampletime => 300,
@@ -182,32 +182,37 @@ end
 
 """
 ```julia
-turbytest(configdict)
-turbytest(configpath)
-turbytest()
+turbytest(rotations,configdict)
+turbytest(rotations,configpath)
+turbytest(rotations=3)
 ```
-Test the device by driving forwards and backwards while blinking the light
+Test the device by driving forwards and backwards while blinking the light.
 """
 function turbytest end
 
-turbytest() = turbytest("config.jl")
+turbytest() = turbytest(3)
 
-function turbytest(configpath::AbstractString)
+turbytest(rotations::Number) = turbytest(rotations,"config.jl")
+
+function turbytest(rotations::Number,configpath::AbstractString)
     cdict = include(configpath)
-    turbytest(cdict)
+    turbytest(rotations,cdict)
 end
 
-function turbytest(config)
+function turbytest(rotations::Number,config::Dict)
     td = mkturby(;config...)
     goingforward = !config[:endforward]
     #go forever
-    while true
+    for _ in 1:(2*rotations)
         flipchamber(td,goingforward,config)
         digitalwrite!(td.ledpin,goingforward)
         goingforward = !goingforward
         sleep(config[:tumbletime]-config[:tflip])
         @show visible(td.luxsensor)
     end
+    #end in load position with the light off
+    loadposition(config)
+    digitalwrite!(td.ledpin,false)
 end
 
 """
@@ -230,6 +235,28 @@ end
 function loadposition(config)
     td = mkturby(;config...)
     flipchamber(td,!config[:endforward],config)
+end
+
+"""
+```julia
+ejectposition(configdict)
+ejectposition(configpath)
+ejectposition()
+```
+Move the chamber to the eject position
+"""
+function ejectposition end
+
+ejectposition() = ejectposition("config.jl")
+
+function ejectposition(configpath::AbstractString)
+    cdict = include(configpath)
+    ejectposition(cdict)
+end
+
+function ejectposition(config)
+    td = mkturby(;config...)
+    flipchamber(td,config[:endforward],config)
 end
 
 """
