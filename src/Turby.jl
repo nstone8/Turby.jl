@@ -20,7 +20,7 @@ Create a configuration file, if `filename` is omitted `"config.jl"` will be used
 - tflip: time it takes the chamber to flip
 - tumbletime: time to wait between chamber flips
 - sampletime: how long to tumble between turbidity measurements
-- settletime: how long to allow the organoids to settle before turning on the lamp
+- settletime: how long to allow the organoids to settle before turning on the lamp.
   This value should be greater than or equal to tumbletime
 - lamptime: how long to wait between turning on the lamp and taking a turbidity measurment
 - datafile: where to store the turbidity measurements, formatted as a path followed by a base name. the current date and time as well as `".csv"` will be appended
