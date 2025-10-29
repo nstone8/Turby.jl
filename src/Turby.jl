@@ -21,6 +21,7 @@ Create a configuration file, if `filename` is omitted `"config.jl"` will be used
 - tumbletime: time to wait between chamber flips
 - sampletime: how long to tumble between turbidity measurements
 - settletime: how long to allow the organoids to settle before turning on the lamp
+  This value should be greater than or equal to tumbletime
 - lamptime: how long to wait between turning on the lamp and taking a turbidity measurment
 - datafile: where to store the turbidity measurements, formatted as a path followed by a base name. the current date and time as well as `".csv"` will be appended
 - endforward: true if driving forward puts the vial in the correct position to take a measurement
@@ -142,11 +143,14 @@ function dissociate(config::Dict,channel::Union{Channel,Nothing})
     datafile = config[:datafile] * Dates.format(tstart,dateformat"Y-m-d-HHMMSS") * ".csv"
     #flip to the read position
     flipchamber(td,config[:endforward],config)
+    #once we're tumbling, we will have been in the read position for
+    #:tumbletime at the top of this loop
+    sleep(config[:tumbletime])
     #go until stopcondition returns true
     while true #implement stop condition here
         #time to take a measurement
         #allow the organoids to settle
-        sleep(config[:settletime])
+        sleep(config[:settletime]-config[:tumbletime])
         #turn on the lamp
         digitalwrite!(td.ledpin,true)
         #wait for a bit
