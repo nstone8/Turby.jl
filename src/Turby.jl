@@ -1,8 +1,11 @@
 module Turby
 
-using BlinkaBoards, TSL2591, PCA9685, DataFrames, CSVFiles, Dates, FileIO
+using BlinkaBoards, TSL2591, PCA9685, LSM6DS,
+    DataFrames, CSVFiles, Dates, FileIO
 
-export TurbyDevice, createconfig, dissociate, turbytest, loadposition, ejectposition, manualread
+export TurbyDevice, createconfig, dissociate,
+    turbytest, loadposition, ejectposition, manualread,
+    stopcontrol, setpoint!, getsetpoint, flipchamber
 
 """
 ```julia
@@ -13,21 +16,17 @@ Create a configuration file, if `filename` is omitted `"config.jl"` will be used
 # Configuration parameters
 - ledpin: GPIO pin for controlling the LED
 - servochannel: physical channel on the `ServoDriver` which is connected to the continuous servo
-- forwardspeed: throttle command to drive the servo forward
-- forwardstop: throttle command to hold the servo at the forward stop
-- reversespeed: throttle command to drive the servo backwards
-- reversestop: throttle command to hold the servo at the reverse stop
-- tflip: time it takes the chamber to flip
 - tumbletime: time to wait between chamber flips
 - sampletime: how long to tumble between turbidity measurements
 - settletime: how long to allow the organoids to settle before turning on the lamp.
   This value should be greater than or equal to tumbletime
 - lamptime: how long to wait between turning on the lamp and taking a turbidity measurment
 - datafile: where to store the turbidity measurements, formatted as a path followed by a base name. the current date and time as well as `".csv"` will be appended
-- endforward: true if driving forward puts the vial in the correct position to take a measurement
 - gain: gain for the `LuxSensor`
 - integrationtime: integration time for the `LuxSensor`
 - stopcondition: NOT YET IMPLEMENTED
+- pgain: proportional gain
+- igain: integral gain
 """
 function createconfig end
 
@@ -39,35 +38,125 @@ function createconfig(filename::AbstractString)
                 Dict(
                         :ledpin => 0,
                         :servochannel => 0,
-                        :forwardspeed => .2,
-                        :forwardstop => 0,
-                        :reversestop => 0,
-                        :tflip => 0.6,
-                        :reversespeed => -.2,
                         :tumbletime => 3,
                         :sampletime => 300,
                         :settletime => 28,
                         :lamptime => 2,
                         :datafile => "turbiditydata",
-                        :endforward => true,
                         :gain => gainmedium,
-                        :integrationtime => it300
+                        :integrationtime => it300,
+                        :pgain => 0.12,
+                        :igain => 0.025
                 )
     """
         print(io,dictstr)
     end
 end
     
+#make a struct for dealing with PI control of the chamber position
 """
 ```julia
-TurbyDevice(ledpinnum)
+ChamberController(p,i,imu,servo,servochannel)
+```
+Start a background task controlling the position of the chamber
+with proportional gain `p` and integral gain `i`. Position information
+is read from `imu` and position is controlled using `servo`.
+"""
+mutable struct ChamberController
+    #lock to prevent race conditions
+    const channel::Channel
+    const lock::ReentrantLock
+    setpoint::Ref{Real}
+    function ChamberController(p::Real,i::Real,imu::IMU,servo::ServoDriver,servochannel::Int)
+        l = ReentrantLock()
+        setpoint = Ref{Real}(0)
+        chan = Channel{Bool}(function(chan)                                  
+                                 #write a PI controller loop
+                                 t_lastsample = time()
+                                 integral_error = 0
+                                 #create our lock and setpoint
+                                 while true                                     
+                                     #read our acceleration
+                                     accel = acceleration(imu)
+                                     #get our timestep for our error integration
+                                     t_sample = time()
+                                     dt = t_sample - t_lastsample
+                                     t_lastsample = t_sample
+                                     theta = begin
+                                         rawt = atan(accel[3],accel[2])
+                                         #the sensor value rolls over from pi to -pi,
+                                         #we don't want this behavior
+                                         rawt < (-pi/2) ? 2pi + rawt : rawt
+                                     end
+                                     #need to acquire the lock to read our setpoint
+                                     error = lock(l) do
+                                         theta - setpoint[]
+                                     end
+                                     integral_error += error*dt
+                                     command = p*error + i*integral_error
+                                     setthrottle!(servo,servochannel,command)
+                                     #die if asked to
+                                     if isready(chan)
+                                         if !(take!(chan))
+                                             setthrottle!(servo,servochannel,0.0)
+                                         end
+                                         return nothing
+                                     end
+                                     yield()
+                                 end
+                             end)
+        return new(chan,l,setpoint)
+    end
+end
+
+"""
+```julia
+stopcontrol(x,currentcommand=true)
+```
+Stop feedback on a `TurbyDevice` or its `ChamberController`. If `currentcommand=true`,
+leave the servo throttle as is, otherwise reset to `0.5`
+"""
+function stopcontrol(c::ChamberController,currentcommand=true)
+    put!(c.channel,currentcommand)
+end
+
+"""
+```julia
+setpoint!(c,s)
+```
+Change the setpoint of a `ChamberController`
+"""
+function setpoint!(c::ChamberController,setpoint)
+    #update to acquire lock
+    lock(c.lock) do
+        c.setpoint[] = setpoint
+    end
+end
+
+"""
+```julia
+getsetpoint(c)
+```
+Get the setpoint of a `ChamberController`
+"""
+function getsetpoint(c::ChamberController)
+    lock(c.lock) do
+        c.setpoint[]
+    end
+end
+
+"""
+```julia
+TurbyDevice(ledpinnum,servochannel,pgain,igain)
+TurbyDevice(configdict)
+TurbyDevice(configfilename)
 ```
 """
 struct TurbyDevice
+    controller::ChamberController
     ledpin::DigitalIOPin
     luxsensor::LuxSensor
-    servo
-    function TurbyDevice(ledpinnum)
+    function TurbyDevice(ledpinnum,servochannel,p,i)
         #get a handle to a connected BlinkaBoard
         b = BlinkaBoard()
         #set up a digital io pin for output
@@ -77,9 +166,235 @@ struct TurbyDevice
         #set up our Lux Sensor
         luxsensor = LuxSensor(bi2c)
         servo = ServoDriver(bi2c)
-        new(ledpin,luxsensor,servo)
+        imu = IMU(bi2c)
+        controller = ChamberController(p,i,imu,servo,servochannel)
+        new(controller,ledpin,luxsensor)
     end
 end
+
+TurbyDevice(config::Dict) = TurbyDevice(config[:ledpin],config[:servochannel],
+                                  config[:pgain],config[:igain])
+
+TurbyDevice(configfilename::AbstractString) = include(configfilename) |> TurbyDevice
+
+stopcontrol(td::TurbyDevice,currentcommand=true) = stopcontrol(td.controller)
+
+"""
+```julia
+flipchamber(td)
+```
+Flip the chamber.
+"""
+function flipchamber(td::TurbyDevice)
+    newpoint = getsetpoint(td.controller) > (pi/2) ? 0 : pi
+    setpoint!(td.controller,newpoint)
+end
+
+#loadposition = pi, eject = 0
+
+"""
+```julia
+loadposition(td)
+```
+Move the chamber to the load position
+"""
+function loadposition(td::TurbyDevice)
+    setpoint!(td.controller,pi)
+    return nothing
+end
+
+"""
+```julia
+ejectposition(td)
+```
+Move the chamber to the eject position
+"""
+function ejectposition(td::TurbyDevice)
+    setpoint!(td.controller,0)
+    return nothing
+end
+
+"""
+```julia
+dissociate(td,configdict,[channel])
+dissociate(configdict,[channel])
+dissociate(configpath,[channel])
+dissociate([channel])
+```
+Start a cycle of dissociation using the provided configuration parameters. If the configuration
+is not provided it will be read from `"config.jl"`. If `channel` is provided, `(time_ms,turbidity)` values
+will be written to this channel during the dissociation, closing this `Channel` will kill the
+dissociation.
+"""
+function dissociate end
+
+dissociate(channel=nothing) = dissociate("config.jl",channel)
+
+function dissociate(configpath::AbstractString,channel=nothing)
+    cdict = include(configpath)
+    dissociate(cdict,channel)
+end
+
+dissociate(config::Dict,channel=nothing) = dissociate(TurbyDevice(config),config,channel)
+
+function dissociate(td::TurbyDevice,config::Dict,channel::Union{Channel,Nothing})
+    #set our gain and integration time
+    setgain!(td.luxsensor,config[:gain])
+    setintegrationtime!(td.luxsensor,config[:integrationtime])
+    #number of times to tumble between samples
+    numtumble = ceil(Int,config[:sampletime]/config[:tumbletime])
+    #numtumble must be even so we take the measurement with the vial correctly oriented
+    numtumble = iseven(numtumble) ? numtumble : numtumble + 1
+    #create vectors to hold our data
+    tsample = Number[]
+    intensity = Number[]
+    #little helper function to turn these vectors into a dataframe
+    mkframe() = DataFrame(:time_ms => tsample,:intensity => intensity)
+    #start the dissociation
+    tstart = now()
+    datafile = config[:datafile] * Dates.format(tstart,dateformat"Y-m-d-HHMMSS") * ".csv"
+    #flip to the read position
+    ejectposition(td)
+    #once we're tumbling, we will have been in the read position for
+    #:tumbletime at the top of this loop
+    sleep(config[:tumbletime])
+    #go until stopcondition returns true
+    while true #implement stop condition here
+        #time to take a measurement
+        #allow the organoids to settle
+        sleep(config[:settletime]-config[:tumbletime])
+        #turn on the lamp
+        digitalwrite!(td.ledpin,true)
+        #wait for a bit
+        sleep(config[:lamptime])
+        #take the measurement
+        thistime_ms::Millisecond = now()-tstart
+        thistime = Dates.value(thistime_ms)
+        push!(tsample,thistime)
+        thismeasurement = visible(td.luxsensor)
+        push!(intensity,thismeasurement)
+        if !isnothing(channel)
+            put!(channel,(thistime,thismeasurement))
+        end
+        #turn off the lamp and show the data
+        digitalwrite!(td.ledpin,false)
+        frame = mkframe()
+        show(frame)
+        println()
+        save(datafile,frame)
+        #tumble until next measurement
+        for _ in 1:numtumble
+            #test if we should stop
+            if (!isnothing(channel) && !isopen(channel))
+                #sleep for a bit to try to make sure the chamber is still
+                sleep(30)
+                stopcontrol(td)
+                return mkframe()
+            end
+            flipchamber(td)
+            sleep(config[:tumbletime])
+        end
+    end
+    return mkframe()
+end
+
+"""
+```julia
+turbytest(td,rotations,configdict)
+turbytest(td,rotations,configpath)
+turbytest(td,rotations=3)
+turbytest()
+```
+Test the device by driving forwards and backwards while blinking the light.
+"""
+function turbytest end
+
+function turbytest()
+    td = TurbyDevice("config.jl")
+    turbytest(td)
+    #wait for the chamber to settle and then stop control
+    sleep(30)
+    stopcontrol(td)
+end
+
+turbytest(td::TurbyDevice) = turbytest(td,3)
+
+turbytest(td::TurbyDevice,rotations::Number) = turbytest(td,rotations,"config.jl")
+
+function turbytest(td::TurbyDevice,rotations::Number,configpath::AbstractString)
+    cdict = include(configpath)
+    turbytest(td,rotations,cdict)
+end
+
+function turbytest(td::TurbyDevice,rotations::Number,config::Dict)
+    for i in 1:(2*rotations)
+        flipchamber(td)
+        digitalwrite!(td.ledpin,isodd(i))
+        sleep(config[:tumbletime])
+        @show visible(td.luxsensor)
+    end
+    #end in load position with the light off
+    loadposition(td)
+    digitalwrite!(td.ledpin,false)
+end
+
+"""
+```julia
+manualread(td,datapath)
+manualread(td,datapath,configpath)
+manualread(td,datapath,config)
+```
+Take manual turbidity measurements.
+"""
+function manualread end
+
+manualread(td::TurbyDevice,datapath) = manualread(td,datapath,"config.jl")
+
+function manualread(td::TurbyDevice,datapath::AbstractString,configpath::AbstractString)
+    cdict = include(configpath)
+    manualread(td,datapath,cdict)
+end
+
+function manualread(td::TurbyDevice,datapath::AbstractString,config::Dict)
+    #set our gain and integration time
+    setgain!(td.luxsensor,config[:gain])
+    setintegrationtime!(td.luxsensor,config[:integrationtime])
+    #go to load position
+    loadposition(td)
+    samplenames = String[]
+    intensities = Number[]
+    #keep going until asked to stop
+    while true
+        println("Load sample and enter sample name. Leave blank to stop.")
+        samplename = readline()
+        if isempty(samplename)
+            break
+        end
+        push!(samplenames,samplename)
+        #go to 'read' position
+        ejectposition(td)
+        digitalwrite!(td.ledpin,true)
+        sleep(5+config[:lamptime])
+        intensity = visible(td.luxsensor)
+        push!(intensities,intensity)
+        println("measured intensity: $intensity")
+        digitalwrite!(td.ledpin,false)
+        #go to load position
+        loadposition(td)
+        println("remove lid and press enter to eject sample")
+        readline()
+        #go to 'read' position
+        ejectposition(td)
+        sleep(5)
+        #go to load position
+        loadposition(td)
+    end
+    data = DataFrame(sample = samplenames, intensity = intensities)
+    save(datapath,data)
+    return data
+end
+
+#===================need to update for new feedback life==========================
 
 """
 ```julia
@@ -317,5 +632,7 @@ function manualread(datapath::AbstractString,config::Dict)
     save(datapath,data)
     return data
 end
+
+======================================================================#
 
 end # module Turby
