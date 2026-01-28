@@ -1,7 +1,7 @@
 module Turby
 
 using BlinkaBoards, TSL2591, PCA9685, LSM6DS,
-    DataFrames, CSVFiles, Dates, FileIO
+    DataFrames, CSVFiles, Dates, FileIO, Plots
 
 export TurbyDevice, createconfig, dissociate,
     turbytest, loadposition, ejectposition, manualread,
@@ -45,7 +45,7 @@ function createconfig(filename::AbstractString)
                         :datafile => "turbiditydata",
                         :gain => gainmedium,
                         :integrationtime => it300,
-                        :pgain => 0.12,
+                        :pgain => 0.1,
                         :igain => 0.025
                 )
     """
@@ -150,6 +150,7 @@ end
 TurbyDevice(ledpinnum,servochannel,pgain,igain)
 TurbyDevice(configdict)
 TurbyDevice(configfilename)
+TurbyDevice()
 ```
 """
 struct TurbyDevice
@@ -175,7 +176,7 @@ end
 TurbyDevice(config::Dict) = TurbyDevice(config[:ledpin],config[:servochannel],
                                   config[:pgain],config[:igain])
 
-TurbyDevice(configfilename::AbstractString) = include(configfilename) |> TurbyDevice
+TurbyDevice(configfilename="config.jl") = include(configfilename) |> TurbyDevice
 
 stopcontrol(td::TurbyDevice,currentcommand=true) = stopcontrol(td.controller)
 
@@ -216,10 +217,9 @@ end
 
 """
 ```julia
-dissociate(td,configdict,[channel])
-dissociate(configdict,[channel])
-dissociate(configpath,[channel])
-dissociate([channel])
+dissociate(td,configdict)
+dissociate(td,configpath)
+dissociate(td)
 ```
 Start a cycle of dissociation using the provided configuration parameters. If the configuration
 is not provided it will be read from `"config.jl"`. If `channel` is provided, `(time_ms,turbidity)` values
@@ -228,16 +228,14 @@ dissociation.
 """
 function dissociate end
 
-dissociate(channel=nothing) = dissociate("config.jl",channel)
+dissociate(td::TurbyDevice) = dissociate(td,"config.jl")
 
-function dissociate(configpath::AbstractString,channel=nothing)
+function dissociate(td::TurbyDevice,configpath::AbstractString)
     cdict = include(configpath)
-    dissociate(cdict,channel)
+    dissociate(td,cdict)
 end
 
-dissociate(config::Dict,channel=nothing) = dissociate(TurbyDevice(config),config,channel)
-
-function dissociate(td::TurbyDevice,config::Dict,channel::Union{Channel,Nothing})
+function dissociate(td::TurbyDevice,config::Dict)
     #set our gain and integration time
     setgain!(td.luxsensor,config[:gain])
     setintegrationtime!(td.luxsensor,config[:integrationtime])
@@ -273,24 +271,16 @@ function dissociate(td::TurbyDevice,config::Dict,channel::Union{Channel,Nothing}
         push!(tsample,thistime)
         thismeasurement = visible(td.luxsensor)
         push!(intensity,thismeasurement)
-        if !isnothing(channel)
-            put!(channel,(thistime,thismeasurement))
-        end
         #turn off the lamp and show the data
         digitalwrite!(td.ledpin,false)
         frame = mkframe()
         show(frame)
+        scatter(tsample/(1000*60),intensity,xguide="time (min)", yguide="intensity (au)",
+                grid=false,legend=false,show=true)
         println()
         save(datafile,frame)
         #tumble until next measurement
-        for _ in 1:numtumble
-            #test if we should stop
-            if (!isnothing(channel) && !isopen(channel))
-                #sleep for a bit to try to make sure the chamber is still
-                sleep(30)
-                stopcontrol(td)
-                return mkframe()
-            end
+        for _ in 1:numtumble            
             flipchamber(td)
             sleep(config[:tumbletime])
         end
@@ -303,19 +293,10 @@ end
 turbytest(td,rotations,configdict)
 turbytest(td,rotations,configpath)
 turbytest(td,rotations=3)
-turbytest()
 ```
 Test the device by driving forwards and backwards while blinking the light.
 """
 function turbytest end
-
-function turbytest()
-    td = TurbyDevice("config.jl")
-    turbytest(td)
-    #wait for the chamber to settle and then stop control
-    sleep(30)
-    stopcontrol(td)
-end
 
 turbytest(td::TurbyDevice) = turbytest(td,3)
 
