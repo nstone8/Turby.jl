@@ -178,7 +178,7 @@ TurbyDevice(config::Dict) = TurbyDevice(config[:ledpin],config[:servochannel],
 
 TurbyDevice(configfilename="config.jl") = include(configfilename) |> TurbyDevice
 
-stopcontrol(td::TurbyDevice,currentcommand=true) = stopcontrol(td.controller)
+stopcontrol(td::TurbyDevice,currentcommand=true) = stopcontrol(td.controller,currentcommand)
 
 """
 ```julia
