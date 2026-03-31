@@ -1,8 +1,9 @@
 module Turby
 
-using BlinkaBoards, TSL2591, PCA9685, DataFrames, CSVFiles, Dates, FileIO
+using BlinkaBoards, TSL2591, DataFrames, CSVFiles, Dates, FileIO
 
-export TurbyDevice, createconfig, dissociate, turbytest, loadposition, ejectposition, manualread
+export TurbyDevice, createconfig, dissociate, turbytest, loadposition, ejectposition, manualread,
+    Stepper, step
 
 """
 ```julia
@@ -15,6 +16,7 @@ Create a configuration file, if `filename` is omitted `"config.jl"` will be used
 - steppin: GPIO pin for actuating the stepper motor
 - dirpin: GPIO pin controlling the stepper direction
 - flipsteps: number of steps on the motor needed to flip the chamber
+- flipdelay: time to wait between motor steps
 - tumbletime: time to wait between chamber flips
 - sampletime: how long to tumble between turbidity measurements
 - settletime: how long to allow the organoids to settle before turning on the lamp.
@@ -38,12 +40,13 @@ function createconfig(filename::AbstractString)
                         :steppin => 1,
                         :dirpin => 2,
                         :flipsteps => 100,
-                        :tumbletime => 3,
+                        :flipdelay => .02,
+                        :tumbletime => 0,
                         :sampletime => 300,
                         :settletime => 28,
                         :lamptime => 2,
                         :datafile => "turbiditydata",
-                        :endforward => true,
+                        :endforward => false,
                         :gain => gainmedium,
                         :integrationtime => it300
                 )
@@ -71,9 +74,9 @@ step(stepper,steps;delay=0.01,forward=true)
 function step(stepper::Stepper,steps::Int;delay=.01,forward=true)
     digitalwrite!(stepper.dir,forward)
     for _ in 1:steps
-        digitalwrite(stepper.step,true)
+        digitalwrite!(stepper.step,true)
         sleep(delay/2)
-        digitalwrite(stepper.step,false)
+        digitalwrite!(stepper.step,false)
         sleep(delay/2)
     end
 end
@@ -110,7 +113,7 @@ flipchamber(td,forward,config)
 Flip the chamber. Flip forward if `forward` is true otherwise flip backwards
 """
 function flipchamber(td::TurbyDevice,forward::Bool,config::Dict)
-    step(td.stepper,config[:flipsteps];forward)
+    step(td.stepper,config[:flipsteps];forward,delay=config[:flipdelay])
 end
 
 """
@@ -146,8 +149,15 @@ dissociate(config::Dict) = dissociate(config,nothing)
 function dissociate(config::Dict,channel::Union{Channel,Nothing})
     #create our TurbyDevice
     td = mkturby(;config...)
+    #measure how long a flip takes 'assume we are starting in the 'load' position
+    tflip = -1*(now() - begin
+                    flipchamber(td,config[:endforward],config)
+                    now()
+                end)
+    #convert to float in seconds
+    tflipms = Dates.value(tflip)/1000
     #number of times to tumble between samples
-    numtumble = ceil(Int,config[:sampletime]/config[:tumbletime])
+    numtumble = ceil(Int,config[:sampletime]/(config[:tumbletime]+tflipms))
     #numtumble must be even so we take the measurement with the vial correctly oriented
     numtumble = iseven(numtumble) ? numtumble : numtumble + 1
     #create vectors to hold our data
@@ -159,8 +169,6 @@ function dissociate(config::Dict,channel::Union{Channel,Nothing})
     goingforward = !config[:endforward]
     tstart = now()
     datafile = config[:datafile] * Dates.format(tstart,dateformat"Y-m-d-HHMMSS") * ".csv"
-    #flip to the read position
-    flipchamber(td,config[:endforward],config)
     #once we're tumbling, we will have been in the read position for
     #:tumbletime at the top of this loop
     sleep(config[:tumbletime])
@@ -223,7 +231,7 @@ end
 
 function turbytest(rotations::Number,config::Dict)
     td = mkturby(;config...)
-    goingforward = !config[:endforward]
+    goingforward = config[:endforward]
     #go forever
     for _ in 1:(2*rotations)
         flipchamber(td,goingforward,config)
@@ -233,7 +241,7 @@ function turbytest(rotations::Number,config::Dict)
         @show visible(td.luxsensor)
     end
     #end in load position with the light off
-    loadposition(config)
+    #loadposition(config)
     digitalwrite!(td.ledpin,false)
 end
 
